@@ -1,0 +1,9 @@
+{
+  "name": "books-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "My blog functions for D1",
+  "scripts": {
+    "start": "echo 'Pages functions running'"
+  }
+}

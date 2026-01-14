@@ -1,0 +1,26 @@
+# Hardcode: .gitignore
+# This file tells Git which files to ignore.
+
+# Cloudflare Wrangler state
+# Contains local database, do NOT upload!
+.wrangler/
+
+# Database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Sensitive data files
+DB.csv
+
+# Backup folders
+backup/
+
+# Node.js dependencies
+node_modules/
+
+# [NEW] Ignore local utility scripts
+# These files are tools, not part of the website code.
+# This also prevents the token in push.bat from being uploaded!
+*.bat
+*.py

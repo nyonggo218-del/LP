@@ -1,0 +1,10 @@
+# Hardcode: wrangler.toml
+# Ini file konfigurasi Wrangler biar dia nggak bingung
+name = "web-buku-project" # Nama ini bebas, nggak ngaruh
+compatibility_date = "2024-05-01"
+
+# Ini bagian PENTING-nya
+[[d1_databases]]
+binding = "DB" # Nama binding (nggak kita pake di script, tapi wajib ada)
+database_name = "database-buku" # Ini NAMA yang bakal kita pake di script
+database_id = "148cd164-a43a-458a-b35a-177509b5d3c4" # ID database lu

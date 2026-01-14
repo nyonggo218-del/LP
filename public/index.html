@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FREE DOWNLOAD</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <header class="site-header">
+      <h1>FREE DOWNLOAD</h1>
+      <p>HERE ALL FREE FOR YOU</p>
+    </header>
+
+    <main>
+      <section id="posts-grid" class="posts-grid">
+        <p class="loading-state">Loading recent posts...</p>
+      </section>
+
+      <nav id="pagination-container" class="pagination-container"></nav>
+      </main>
+
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        const postsGrid = document.getElementById("posts-grid");
+        const paginationContainer =
+          document.getElementById("pagination-container");
+
+        function setupObserver() {
+          const hiddenElements = document.querySelectorAll(".hidden-card");
+          const observer = new IntersectionObserver(
+            (entries) => {
+              entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add("show-card");
+                  observer.unobserve(entry.target);
+                }
+              });
+            },
+            { threshold: 0.1 }
+          );
+          hiddenElements.forEach((el) => observer.observe(el));
+        }
+
+        /**
+         * [MODIFIED] Renders pagination buttons
+         */
+        function renderPagination(totalPages, currentPage) {
+          paginationContainer.innerHTML = "";
+          if (totalPages <= 1) return; // No pagination if only 1 page
+
+          let html = "";
+          const pageWindow = 2; // How many pages to show around current page
+
+          // Previous Button
+          html += `<button class="page-btn" data-page="${
+            currentPage - 1
+          }" ${currentPage === 1 ? "disabled" : ""}>&laquo; Prev</button>`;
+
+          // Page numbers
+          for (let i = 1; i <= totalPages; i++) {
+            // Logic to show "..."
+            if (
+              i === 1 ||
+              i === totalPages ||
+              (i >= currentPage - pageWindow && i <= currentPage + pageWindow)
+            ) {
+              html += `<button class="page-btn ${
+                i === currentPage ? "active" : ""
+              }" data-page="${i}">${i}</button>`;
+            } else if (
+              i === currentPage - pageWindow - 1 ||
+              i === currentPage + pageWindow + 1
+            ) {
+              html += `<span class="page-dots">...</span>`;
+            }
+          }
+
+          // Next Button
+          html += `<button class="page-btn" data-page="${
+            currentPage + 1
+          }" ${currentPage === totalPages ? "disabled" : ""}>Next &raquo;</button>`;
+
+          paginationContainer.innerHTML = html;
+        }
+
+        /**
+         * [MODIFIED] loadPosts now accepts a page number
+         */
+        async function loadPosts(page = 1) {
+          // Show loading state
+          postsGrid.innerHTML =
+            '<p class="loading-state">Loading recent posts...</p>';
+          paginationContainer.innerHTML = ""; // Clear old pagination
+
+          try {
+            // [MODIFIED] Fetch with page query
+            const response = await fetch(`/api/buku?page=${page}`);
+
+            if (!response.ok) {
+              let errorMessage;
+              const errorBody = await response.text();
+              try {
+                const errJson = JSON.parse(errorBody);
+                errorMessage = errJson.error || JSON.stringify(errJson);
+              } catch (e) {
+                errorMessage = errorBody;
+              }
+              throw new Error(errorMessage);
+            }
+
+            // [MODIFIED] Parse new data structure
+            const data = await response.json();
+            const posts = data.posts;
+            postsGrid.innerHTML = ""; // Clear loading state
+
+            if (posts.length === 0) {
+              postsGrid.innerHTML =
+                '<p class="loading-state">No posts found for this page.</p>';
+              return;
+            }
+
+            posts.forEach((post) => {
+              const imageUrl =
+                post.Image ||
+                `https://via.placeholder.com/400x200/444/fff?text=${
+                  post.Kategori || "Blog"
+                }`;
+
+              const postCardHTML = `
+                <article class="post-card hidden-card">
+                  <a href="/post/${post.KodeUnik}" class="card-link">
+                    <div class="card-image-wrapper">
+                      <img src="${imageUrl}" alt="${post.Judul}" class="card-image" />
+                    </div>
+                    <div class="card-content">
+                      <span class="card-category">${
+                        post.Kategori || "General"
+                      }</span>
+                      <h3 class="card-title">${post.Judul}</h3>
+                      <p class="card-author">By: ${post.Author}</p>
+                    </div>
+                  </a>
+                </article>
+              `;
+              postsGrid.insertAdjacentHTML("beforeend", postCardHTML);
+            });
+
+            setupObserver();
+            // [MODIFIED] Render the pagination buttons
+            renderPagination(data.totalPages, data.currentPage);
+          } catch (error) {
+            postsGrid.innerHTML = `<p class="loading-state error">Oops, failed to fetch data: ${error.message}</p>`;
+            console.error("Failed to load posts:", error);
+          }
+        }
+
+        /**
+         * [MODIFIED] Event listener for pagination
+         */
+        paginationContainer.addEventListener("click", (e) => {
+          // Only listen for clicks on .page-btn
+          if (e.target.classList.contains("page-btn")) {
+            const page = parseInt(e.target.dataset.page);
+            if (!page || e.target.disabled) return;
+            loadPosts(page);
+            // Scroll to top
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }
+        });
+
+        // [MODIFIED] Load page 1 on initial start
+        loadPosts(1);
+      });
+    </script>
+  </body>
+
+</html>
