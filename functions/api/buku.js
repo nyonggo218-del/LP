@@ -2,8 +2,9 @@
 // Handles requests to /api/buku
 // [MODIFIED] Added full pagination logic
 // [FIXED] Replaced ID with KodeUnik and rowid for sorting
+// [UPDATED] Made Description optional for D1 space saving
 
-const POSTS_PER_PAGE = 20; // [MODIFIED] Limit 20
+const POSTS_PER_PAGE = 20; // Limit 20
 
 /**
  * Handles GET requests to fetch paginated books (posts)
@@ -75,13 +76,14 @@ export async function onRequestPost(context) {
 
   try {
     const postData = await request.json();
+    
+    // [UPDATED] Deskripsi dihapus dari validasi wajib
     if (
       !postData.Judul ||
-      !postData.Deskripsi ||
       !postData.Author ||
       !postData.KodeUnik
     ) {
-      return new Response(JSON.stringify({ error: "Missing required fields" }), {
+      return new Response(JSON.stringify({ error: "Missing required fields (Judul, Author, KodeUnik)" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
@@ -93,7 +95,7 @@ export async function onRequestPost(context) {
       )
       .bind(
         postData.Judul,
-        postData.Deskripsi,
+        postData.Deskripsi || "", // [UPDATED] Default ke string kosong jika null
         postData.Author,
         postData.Image || null,
         postData.Kategori || null,
