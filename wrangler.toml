@@ -4,4 +4,4 @@ compatibility_date = "2024-05-01"
 [[d1_databases]]
 binding = "DB" # INI PENTING: Ini adalah nama variabel akses di kode (env.DB)
 database_name = "buku" # Ini nama internal untuk Cloudflare (dashboard)
-database_id = "6af448c7-a7e9-4e87-acac-fea1a2b10a24" # Pastikan ID ini benar dari dashboard
+database_id = "35ebba56-ce01-42e2-b9ee-be05e2abdb32" # Pastikan ID ini benar dari dashboard
