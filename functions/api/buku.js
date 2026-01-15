@@ -1,6 +1,7 @@
 // Hardcode: /functions/api/buku.js
 // Handles requests to /api/buku
 // [MODIFIED] Added full pagination logic
+// [FIXED] Replaced ID with KodeUnik and rowid for sorting
 
 const POSTS_PER_PAGE = 20; // [MODIFIED] Limit 20
 
@@ -12,17 +13,17 @@ async function handleGetAll(db, page) {
   const offset = (page - 1) * limit;
 
   // Query 1: Get total count
-  // We cache this count query result in the function (in-memory) for 1 min
-  // NOTE: This simple cache won't work across multiple edge locations,
-  // but it's better than nothing. The s-maxage cache on the response is more important.
-  const countStmt = db.prepare("SELECT COUNT(ID) as total FROM Buku");
+  // Menggunakan KodeUnik karena kolom ID tidak ada
+  const countStmt = db.prepare("SELECT COUNT(KodeUnik) as total FROM Buku");
   const { total } = await countStmt.first();
   const totalPages = Math.ceil(total / limit);
 
   // Query 2: Get the posts for the current page
+  // Hapus 'ID' dari SELECT
+  // Ganti ORDER BY ID -> ORDER BY rowid (untuk urutan 'terbaru' berdasarkan waktu insert)
   const postsStmt = db
     .prepare(
-      "SELECT ID, Judul, Author, Image, Kategori, KodeUnik FROM Buku ORDER BY ID DESC LIMIT ? OFFSET ?"
+      "SELECT Judul, Author, Image, Kategori, KodeUnik FROM Buku ORDER BY rowid DESC LIMIT ? OFFSET ?"
     )
     .bind(limit, offset);
 
@@ -68,8 +69,6 @@ export async function onRequestGet(context) {
  * Main handler for POST requests (create)
  */
 export async function onRequestPost(context) {
-  // ... (fungsi onRequestPost kamu biarin aja, nggak perlu diubah) ...
-  // ... (pastikan kode POST kamu yang lama ada di sini) ...
   // WARNING: This endpoint is open to the public. Secure it!
   const { env, request } = context;
   const db = env.DB;
