@@ -15,7 +15,7 @@ const SPINTAX_PREFIX = `{Download|Get|Free|Read|Review|Grab} {PDF|Epub|Mobi|Audi
 const SPINTAX_SUFFIX = `{Full Version|Unabridged|Complete Edition|2026 Updated} {No Sign Up|Direct Link|High Speed|Free Account} {Best Seller|Trending|Viral|Must Read}`;
 const MULTI_LANG_PREFIX = `{Download|Herunterladen (DE)|Télécharger (FR)|Descargar (ES)|Scarica (IT)} {Free|Kostenlos|Gratuit|Gratis} {PDF|Ebook|Livre|Libro}`;
 
-// --- SPINTAX CONFIG (DESKRIPSI - BARU) ---
+// --- SPINTAX CONFIG (DESKRIPSI) ---
 const DESC_PREFIX = `{Listen to|Enjoy|Discover|Explore|Browse|Hear|Check out}`;
 const DESC_SUFFIX = `{free audiobook|without cost|for free|digitally|no registration|instant access|in full version}`;
 const DESC_TAGS = `{audiobook download|free mp3 books|listen books online|digital library|best seller audiobooks|download kindle free|podcast collection}`;
@@ -81,23 +81,43 @@ export async function onRequest(context) {
     const SITE_URL = `${url.protocol}//${CURRENT_HOST}`;
     const selfLink = `${SITE_URL}${url.pathname}`;
 
-    // Menangkap Parameter URL yang kompleks (Category/User/Pinterest/Backlink)
+    // === PARSING URL BARU ===
+    // Struktur: /Kategori/DD/MM/YYYY/Username/PintUser/PintBoard/Tier2...
     const pathSegments = params.path || [];
-    const categoryParam = pathSegments[0]; 
-    const usernameParam = pathSegments[1]; 
-    const pintUserParam = pathSegments[2]; 
-    const pintBoardParam = pathSegments[3]; 
-    const extraBacklinkSegments = pathSegments.slice(4); 
+    
+    // 1. Ambil Parameter
+    const categoryParam = pathSegments[0]; // Index 0
+    const pDay = pathSegments[1];          // Index 1 (Tanggal)
+    const pMonth = pathSegments[2];        // Index 2 (Bulan)
+    const pYear = pathSegments[3];         // Index 3 (Tahun)
+    const usernameParam = pathSegments[4]; // Index 4 (Username)
+    const pintUserParam = pathSegments[5]; // Index 5
+    const pintBoardParam = pathSegments[6]; // Index 6
+    const extraBacklinkSegments = pathSegments.slice(7); // Index 7 ke atas
 
+    // 2. Setup Tanggal & Waktu (Base Time)
+    let baseDate = new Date();
+    // Validasi sederhana: pastikan parameter tanggal ada isinya
+    if (pDay && pMonth && pYear) {
+        baseDate.setDate(parseInt(pDay));
+        baseDate.setMonth(parseInt(pMonth) - 1); 
+        baseDate.setFullYear(parseInt(pYear));
+    }
+    const BASE_TIME_MS = baseDate.getTime();
+    const WINDOW_MS = 6 * 60 * 60 * 1000; // 6 Jam mundur
+
+    // 3. Setup Identitas
     const emailUser = usernameParam || "contact";
     const emailDomain = getRootDomain(CURRENT_HOST);
     const DYNAMIC_EMAIL = `${emailUser}@${emailDomain}`;
+    // Identity Seed gabungan kategori + username
     const identitySeed = (categoryParam || "") + (usernameParam || "");
     
     const dynamicFeedTitle = spinTextStable(FEED_TITLE_SPIN, identitySeed + "title");
     const dynamicFeedDesc = spinTextStable(FEED_DESC_SPIN, identitySeed + "desc");
     const dynamicFeedAuthor = spinTextStable(FEED_AUTHOR_SPIN, identitySeed + "auth");
 
+    // 4. Setup Backlink (Pinterest & Tier 2)
     let rawPinterestUrl = "";
     if (pintUserParam && pintBoardParam) {
         rawPinterestUrl = `https://www.pinterest.com/${pintUserParam}/${pintBoardParam}/`;
@@ -109,27 +129,26 @@ export async function onRequest(context) {
         if (!rawTier2Url.startsWith("http")) rawTier2Url = "https://" + rawTier2Url;
     }
 
-    const todayStr = new Date().toISOString().slice(0, 10); 
-    const dailyHash = stringToHash(todayStr + identitySeed);
-    const dynamicLimit = 100 + (dailyHash % 91); 
-
+    // 5. Query Database (LOGIKA BARU)
+    // - Hapus TanggalPost
+    // - Limit 180 (agar sinkron dengan RSS 6 jam)
     const queryParams = [];
-    
-    // UPDATE QUERY: Menggunakan TanggalPost dan menghapus Deskripsi
-    let query = "SELECT Judul, Author, Kategori, Image, KodeUnik, TanggalPost FROM Buku WHERE TanggalPost IS NOT NULL AND TanggalPost <= DATETIME('now', 'localtime')";
+    let query = "SELECT Judul, Author, Kategori, Image, KodeUnik FROM Buku WHERE 1=1";
     
     if (categoryParam) {
       query += " AND UPPER(Kategori) = UPPER(?)";
       queryParams.push(categoryParam);
     }
     
-    // Urutkan berdasarkan TanggalPost
-    query += ` ORDER BY TanggalPost DESC LIMIT ${dynamicLimit}`; 
+    // Urutkan berdasarkan ID DESC (Terbaru)
+    query += ` ORDER BY ID DESC LIMIT 180`; 
     
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
 
-    const lastBuildDate = new Date().toUTCString();
+    // Last Build Date = Waktu Generator (Base Date)
+    const lastBuildDate = baseDate.toUTCString();
+    
     const picsumSeed = identitySeed || "default";
     const rawPicsumUrl = `https://picsum.photos/seed/${picsumSeed}/1400/1400`;
     const channelCoverUrl = `${SITE_URL}/image-proxy?url=${encodeURIComponent(rawPicsumUrl)}&ext=.jpg`;
@@ -143,7 +162,7 @@ export async function onRequest(context) {
 <language>${DEFAULT_CONFIG.language}</language>
 <copyright>${cdata(dynamicFeedAuthor)}</copyright>
 <lastBuildDate>${lastBuildDate}</lastBuildDate>
-<generator>Firstory</generator>
+<generator>CloudflarePages</generator>
 <atom:link href="${selfLink}" rel="self" type="application/rss+xml" />
 <itunes:summary>${cdata(dynamicFeedDesc)}</itunes:summary>
 <itunes:author>${cdata(dynamicFeedAuthor)}</itunes:author>
@@ -155,51 +174,56 @@ export async function onRequest(context) {
 <itunes:category text="${DEFAULT_CONFIG.category}"><itunes:category text="${DEFAULT_CONFIG.subCategory}"/></itunes:category>
 `;
 
-    for (const post of results) {
+    // LOOP POSTS
+    for (let i = 0; i < results.length; i++) {
+      const post = results[i];
+      
       const audioUrl = `${SITE_URL}/podcast-audio/${post.KodeUnik}.mp3`;
       const postUrl = `${SITE_URL}/post/${post.KodeUnik}`;
       
       const seed = (post.KodeUnik || post.Judul) + identitySeed;
       const judulAsli = post.Judul || "Untitled";
 
+      // --- LOGIKA WAKTU (6 JAM MUNDUR) ---
+      // Post i=0 (Paling atas) = Waktu Base
+      // Post i=179 (Paling bawah) = Waktu Base - 6 Jam
+      const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
+      const postTime = new Date(BASE_TIME_MS - timeOffset);
+      const pubDate = postTime.toUTCString();
+      // -----------------------------------
+
       const isMultiLang = (stringToHash(seed + "langType") % 100) < 50; 
       let awalan = isMultiLang ? spinTextStable(MULTI_LANG_PREFIX, seed + "prefix") : spinTextStable(SPINTAX_PREFIX, seed + "prefix");
       let akhiran = isMultiLang ? spinTextStable("{2025|2026|Full}", seed + "suffix") : spinTextStable(SPINTAX_SUFFIX, seed + "suffix");
       const finalTitle = `${awalan} ${judulAsli} ${akhiran}`;
       
-      // --- UPDATE LOGIC DESKRIPSI ---
-      // Membuat deskripsi otomatis karena kolom Deskripsi sudah tidak ada
+      // Spintax Deskripsi
       const descStart = spinTextStable(DESC_PREFIX, seed + "descStart");
       const descEnd = spinTextStable(DESC_SUFFIX, seed + "descEnd");
       const descTags = spinTextStable(DESC_TAGS, seed + "descTags");
       const authorSafe = post.Author || "Unknown Author";
       
-      // Deskripsi Text (Bersih) untuk iTunes Summary
       const rawDescText = `${descStart} ${judulAsli} by ${authorSafe} ${descEnd}. Tags: ${descTags}`;
 
-      // 1. Generate Backlink (Disimpan dulu - 70% Chance)
+      // Backlink Injection (70% Chance)
       let pinterestPart = "";
       let tier2Part = "";
       const luckFactor = stringToHash(seed + "backlinkLuck") % 100;
       
-      if (luckFactor < 70) {
+      if (luckFactor < 80) {
           if (rawPinterestUrl) {
-              pinterestPart = `<p>📍 ${spinTextStable(PINTEREST_INTRO, seed + "pintro")}: <a href="${rawPinterestUrl}">${spinTextStable(PINTEREST_ANCHOR, seed + "panchor")}</a></p>`;
+              pinterestPart = `<p>📌 ${spinTextStable(PINTEREST_INTRO, seed + "pintro")}: <a href="${rawPinterestUrl}">${spinTextStable(PINTEREST_ANCHOR, seed + "panchor")}</a></p>`;
           }
           if (rawTier2Url) {
-              tier2Part = `<p>🔗 ${spinTextStable(TIER2_INTRO, seed + "tintro")} <strong><a href="${rawTier2Url}">${spinTextStable(TIER2_ANCHOR, seed + "tanchor")}</a></strong></p>`;
+              tier2Part = `<p>🎧 ${spinTextStable(TIER2_INTRO, seed + "tintro")} <strong><a href="${rawTier2Url}">${spinTextStable(TIER2_ANCHOR, seed + "tanchor")}</a></strong></p>`;
           }
       }
 
-      // ============================================================
-      // TOMBOL DOWNLOAD & HTML CONTENT
-      // ============================================================
+      // HTML Content
       const ctaPrefix = spinTextStable("{DOWNLOAD|GET BOOK|READ NOW|ACCESS FILE}", seed + "cta");
       const ctaFormat = spinTextStable("{PDF/Epub|Ebook Format|Full PDF|Digital Book}", seed + "format");
-      
       const liveLinkText = `📥 ${ctaPrefix}: ${judulAsli} (${ctaFormat})`;
 
-      // Content HTML Lengkap
       const htmlContent = `
         <p>${rawDescText}</p>
         <hr/>
@@ -210,9 +234,7 @@ export async function onRequest(context) {
         ${tier2Part}
       `;
       
-      // Description HTML (Link Menonjol)
       const descWithLinks = `${rawDescText.substring(0, 300)}... <br/><br/>👉 <strong><a href="${postUrl}">${liveLinkText}</a></strong><br/><br/>${pinterestPart}${tier2Part}`;
-      // ============================================================
 
       let episodeImage = channelCoverUrl; 
       if (post.Image) {
@@ -221,10 +243,6 @@ export async function onRequest(context) {
 
       const dummySize = 3000000 + (stringToHash(seed + "size") % 5000000);
       const dummyDuration = 600 + (stringToHash(seed + "dur") % 1200);
-
-      const pubDate = post.TanggalPost 
-        ? new Date(post.TanggalPost).toUTCString() 
-        : lastBuildDate;
 
       xml += `<item>
 <title>${cdata(finalTitle)}</title>

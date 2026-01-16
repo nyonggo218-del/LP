@@ -17,13 +17,8 @@ const MULTI_LANG_PREFIX = `{Download|Herunterladen (DE)|Télécharger (FR)|Desca
 {PDF|Ebook|Livre|Libro}`;
 
 // --- CONFIG: SPINTAX DESKRIPSI ---
-// 1. Variasi kata "Read" (Dibuat beda dari Title agar variatif)
 const DESC_PREFIX = `{Read|Enjoy|Discover|Explore|Browse|Open|Look at}`;
-
-// 2. Variasi kata "Free Online"
 const DESC_SUFFIX = `{free online|without cost|for free|digitally|no registration|instant access|in full version}`;
-
-// 3. Tag/Keyword seruan Download (CTA Tags)
 const DESC_TAGS = `{ebook download pdf|free epub books|read books online|digital library|best seller books|download kindle free|pdf collection}`;
 
 // --- END CONFIG ---
@@ -75,25 +70,51 @@ export async function onRequestGet(context) {
       ? `${url.protocol}//${forwardedHost}` 
       : url.origin;
 
-    // Menangkap kategori dari folder [[path]]
-    // Contoh: domain.com/business/rss.xml -> params.path = ['business']
+    // --- LOGIKA URL & TANGGAL ---
+    // Struktur: /kategori/hari/bulan/tahun/rss.xml
+    // Contoh: /ebook1/16/01/2025/rss.xml
+    
     const pathSegments = params.path || [];
     const kategori = pathSegments[0] || null;
+    
+    // Ambil parameter tanggal dari URL jika ada
+    const pDay = pathSegments[1];
+    const pMonth = pathSegments[2];
+    const pYear = pathSegments[3];
+
+    // Tentukan "Base Time" (Waktu Mulai Post)
+    // Jam/Menit/Detik diambil dari waktu Generate (Sekarang)
+    let baseDate = new Date(); 
+
+    // Jika URL mengandung tanggal lengkap, timpa Tanggal/Bulan/Tahun-nya
+    if (pDay && pMonth && pYear) {
+        // Hati-hati: Bulan di JS mulai dari 0 (Januari = 0)
+        baseDate.setDate(parseInt(pDay));
+        baseDate.setMonth(parseInt(pMonth) - 1); 
+        baseDate.setFullYear(parseInt(pYear));
+        // Jam, Menit, Detik tetap mengikuti waktu 'now' (Generate time)
+    }
+
+    const BASE_TIME_MS = baseDate.getTime();
+    
+    // [MODIFIED] Rentang waktu diubah menjadi 6 Jam (dalam milidetik)
+    // 6 jam * 60 menit * 60 detik * 1000 ms
+    const WINDOW_MS = 6 * 60 * 60 * 1000; 
 
     const queryParams = [];
     
     // QUERY DATABASE
-    // Mengambil kolom yang sudah disepakati: Judul, Author, Kategori, Image, KodeUnik, TanggalPost, Views
+    // Menggunakan ORDER BY ID DESC sebagai indikator buku terbaru
+    // LIMIT diset 180
     let query =
-      "SELECT Judul, Author, Kategori, Image, KodeUnik, TanggalPost, Views FROM Buku WHERE TanggalPost IS NOT NULL AND TanggalPost <= DATETIME('now', 'localtime')";
+      "SELECT Judul, Author, Kategori, Image, KodeUnik, Views FROM Buku WHERE 1=1";
 
     if (kategori) {
-      // Filter berdasarkan kategori yang ditangkap dari URL
       query += " AND UPPER(Kategori) = UPPER(?)";
       queryParams.push(kategori);
     }
     
-    query += " ORDER BY TanggalPost DESC LIMIT 50"; 
+    query += " ORDER BY ID DESC LIMIT 180"; 
     
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
@@ -102,9 +123,11 @@ export async function onRequestGet(context) {
       ? `${escapeXML(BLOG_TITLE)} - ${escapeXML(kategori)} Collection`
       : escapeXML(BLOG_TITLE);
       
-    // Self Link menyesuaikan URL saat ini
     const selfPath = url.pathname; 
     const selfLink = `${SITE_URL}${selfPath}`;
+
+    // Last Build Date = Waktu Generator saat ini (Base Date)
+    const buildDateStr = baseDate.toUTCString();
 
     let xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0" xmlns:g="http://base.google.com/ns/1.0" xmlns:atom="http://www.w3.org/2005/Atom">
@@ -113,18 +136,26 @@ export async function onRequestGet(context) {
   <link>${SITE_URL}</link>
   <description>${escapeXML(BLOG_DESCRIPTION)}</description>
   <language>en-us</language>
-  <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+  <lastBuildDate>${buildDateStr}</lastBuildDate>
   <atom:link href="${selfLink}" rel="self" type="application/rss+xml" />
 `;
 
-    for (const post of results) {
-      // Link post tetap mengarah ke /post/ID
-      const postUrl = `${SITE_URL}/post/${post.KodeUnik}`;
+    // Loop data untuk generate item
+    for (let i = 0; i < results.length; i++) {
+      const post = results[i];
       
+      // --- LOGIKA DISTRIBUSI WAKTU ---
+      // Post ke-0 (Teratas) = Waktu Generate (Base Time)
+      // Post ke-179 (Terbawah) = Waktu Generate - 6 Jam
+      const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
+      const postTime = new Date(BASE_TIME_MS - timeOffset);
+      const pubDate = postTime.toUTCString();
+      // -------------------------------
+
+      const postUrl = `${SITE_URL}/post/${post.KodeUnik}`;
       const judulAsli = escapeXML(post.Judul);
       const seed = post.KodeUnik || post.Judul; 
 
-      // --- LOGIKA SPINTAX JUDUL ---
       const isMultiLang = (stringToHash(seed + "langType") % 100) < 50; 
       let awalan = "";
       let akhiran = "";
@@ -140,8 +171,6 @@ export async function onRequestGet(context) {
       const judulBaru = `${awalan} ${judulAsli} ${akhiran}`;
       const ctaDesc = spinTextStable("{Click to Download|Get it Now|Read Online}", seed + "cta");
 
-      // --- LOGIKA SPINTAX DESKRIPSI ---
-      // Format: [Read Spintax] Judul by Author [Free Spintax]. Tags: [Tag Spintax]
       const descStart = spinTextStable(DESC_PREFIX, seed + "descStart");
       const descEnd = spinTextStable(DESC_SUFFIX, seed + "descEnd");
       const descTags = spinTextStable(DESC_TAGS, seed + "descTags");
@@ -154,10 +183,6 @@ export async function onRequestGet(context) {
         const encodedImageUrl = encodeURIComponent(post.Image);
         proxiedImageUrl = `${SITE_URL}/image-proxy?url=${encodedImageUrl}`;
       }
-
-      const pubDate = post.TanggalPost 
-        ? new Date(post.TanggalPost).toUTCString() 
-        : new Date().toUTCString();
 
       xml += `
   <item>
@@ -196,3 +221,4 @@ export async function onRequestGet(context) {
     });
   }
 }
+
