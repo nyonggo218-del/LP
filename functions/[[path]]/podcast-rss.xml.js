@@ -81,7 +81,7 @@ export async function onRequest(context) {
     const SITE_URL = `${url.protocol}//${CURRENT_HOST}`;
     const selfLink = `${SITE_URL}${url.pathname}`;
 
-    // === PARSING URL BARU ===
+    // === PARSING URL BARU (Sama seperti RSS) ===
     // Struktur: /Kategori/DD/MM/YYYY/Username/PintUser/PintBoard/Tier2...
     const pathSegments = params.path || [];
     
@@ -97,7 +97,7 @@ export async function onRequest(context) {
 
     // 2. Setup Tanggal & Waktu (Base Time)
     let baseDate = new Date();
-    // Validasi sederhana: pastikan parameter tanggal ada isinya
+    // Jika URL ada tanggalnya, kita pakai itu
     if (pDay && pMonth && pYear) {
         baseDate.setDate(parseInt(pDay));
         baseDate.setMonth(parseInt(pMonth) - 1); 
@@ -129,9 +129,9 @@ export async function onRequest(context) {
         if (!rawTier2Url.startsWith("http")) rawTier2Url = "https://" + rawTier2Url;
     }
 
-    // 5. Query Database (LOGIKA BARU)
-    // - Hapus TanggalPost
-    // - Limit 180 (agar sinkron dengan RSS 6 jam)
+    // 5. Query Database (FIXED)
+    // - Hapus TanggalPost & Views
+    // - Gunakan ORDER BY rowid DESC
     const queryParams = [];
     let query = "SELECT Judul, Author, Kategori, Image, KodeUnik FROM Buku WHERE 1=1";
     
@@ -140,13 +140,13 @@ export async function onRequest(context) {
       queryParams.push(categoryParam);
     }
     
-    // Urutkan berdasarkan ID DESC (Terbaru)
-    query += ` ORDER BY ID DESC LIMIT 180`; 
+    // Menggunakan rowid untuk memastikan LIFO (Last In First Out)
+    query += ` ORDER BY rowid DESC LIMIT 180`; 
     
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
 
-    // Last Build Date = Waktu Generator (Base Date)
+    // Last Build Date = Waktu dari URL
     const lastBuildDate = baseDate.toUTCString();
     
     const picsumSeed = identitySeed || "default";
@@ -210,7 +210,7 @@ export async function onRequest(context) {
       let tier2Part = "";
       const luckFactor = stringToHash(seed + "backlinkLuck") % 100;
       
-      if (luckFactor < 80) {
+      if (luckFactor < 70) {
           if (rawPinterestUrl) {
               pinterestPart = `<p>📌 ${spinTextStable(PINTEREST_INTRO, seed + "pintro")}: <a href="${rawPinterestUrl}">${spinTextStable(PINTEREST_ANCHOR, seed + "panchor")}</a></p>`;
           }
