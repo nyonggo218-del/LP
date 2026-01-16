@@ -20,6 +20,7 @@ function stringToHash(s){let h=0;if(!s)return h;for(let i=0;i<s.length;i++){h=((
 function getSpintaxDesc(t){const h=stringToHash(t||"Document");return DESC_TEMPLATES[h%DESC_TEMPLATES.length].replace("{TITLE}",t||"Document")}
 
 // 1. DATABASE LOCAL
+// [AMAN] Hanya ambil kolom yang tersedia (Tanpa Deskripsi/Tanggal/Views)
 async function getPostFromDB(db, id) {
   try {
     const stmt = db.prepare("SELECT Judul, Image, Author, Kategori FROM Buku WHERE KodeUnik = ?").bind(id);
@@ -45,7 +46,7 @@ async function fetchGoogleBooks(isbn) {
     return { found: false };
 }
 
-// 3. GOODREADS SEARCH (BY ASIN) - [FIX: ANTI-AUTHOR]
+// 3. GOODREADS SEARCH (BY ASIN)
 async function scrapeGoodreadsSearch(asin) {
     try {
         const url = `https://www.goodreads.com/search?q=${asin}`;
@@ -58,9 +59,7 @@ async function scrapeGoodreadsSearch(asin) {
         const html = await r.text();
         const finalUrl = r.url;
 
-        // A. CEK JIKA REDIRECT KE HALAMAN BUKU (DETAIL PAGE)
         if (finalUrl.includes("/book/show/")) {
-            // Di halaman detail, judul biasanya H1
             const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
             const authorMatch = html.match(/<a class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
             
@@ -73,34 +72,19 @@ async function scrapeGoodreadsSearch(asin) {
             }
         }
 
-        // B. CEK HALAMAN PENCARIAN (SEARCH RESULT)
-        // KITA CARI: <span ... role="heading" ... aria-level="4" ...> JUDUL </span>
-        // Penulis TIDAK PUNYA role="heading", jadi aman.
-        
-        // Regex ini mencari span yang PUNYA 'role="heading"' DAN 'aria-level="4"' (Urutan atribut bisa bolak-balik)
-        // Kita tidak peduli 'itemprop' lagi karena itu bikin bingung sama author.
-        
-        // Pola 1: role dulu baru aria-level
         let titleMatch = html.match(/<span[^>]*role="heading"[^>]*aria-level="4"[^>]*>\s*([^<]+)\s*<\//i);
-        
-        // Pola 2: aria-level dulu baru role (Jaga-jaga)
         if (!titleMatch) {
             titleMatch = html.match(/<span[^>]*aria-level="4"[^>]*role="heading"[^>]*>\s*([^<]+)\s*<\//i);
         }
-
-        // Pola 3: Fallback ke Class "bookTitle" (Sangat Spesifik Judul)
         if (!titleMatch) {
             titleMatch = html.match(/class="bookTitle"[^>]*>.*?<span[^>]*>([^<]+)<\/span>/s);
         }
 
-        // Regex untuk Author (Ambil dari class authorName biar gak ketukar)
         const authorMatch = html.match(/class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
 
         if (titleMatch && titleMatch[1]) {
             let title = titleMatch[1].trim();
-            // Bersihkan sampah HTML
             title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
-            
             let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Amazon Author";
             return { found: true, title: title, author: author };
         }
@@ -190,52 +174,37 @@ async function getDataFallback(id) {
   let d = { Judul: "Restricted Document", Image: "", Author: "Unknown Author", Kategori: "General", KodeUnik: id };
 
   try {
-    // ----------------------------------------------------------------
-    // JALUR 1: AMAZON (Prefix A- atau ASIN)
-    // ----------------------------------------------------------------
+    // JALUR 1: AMAZON
     if (id.startsWith("A-") || /^B[A-Z0-9]{9}$/.test(id)) {
       const realId = id.startsWith("A-") ? id.substring(2) : id;
-      
-      // 1. GAMBAR
       d.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
       d.Kategori = "Kindle Ebook";
       
-      // 2. JUDUL: Goodreads Search (Pasti Akurat)
       const grSearch = await scrapeGoodreadsSearch(realId);
       if (grSearch.found) {
           d.Judul = grSearch.title;
           d.Author = grSearch.author;
           return d;
       }
-
-      // 3. JUDUL: Google Search (Cadangan)
       const gSearch = await scrapeGoogleSearch(`amazon book ${realId}`, 'text');
       if (gSearch.found) {
           d.Judul = gSearch.title;
           d.Author = "Amazon Author"; 
           return d;
       }
-
-      // 4. JUDUL: OpenLibrary (Terakhir)
       try {
         const r = await fetch(`https://openlibrary.org/search.json?q=${realId}&fields=title`, { cf: { cacheTtl: 86400 } });
         const j = await r.json();
         if (j.docs && j.docs.length > 0) d.Judul = j.docs[0].title;
-        else d.Judul = "Restricted Document";
-      } catch (e) { d.Judul = "Restricted Document"; }
-      
+      } catch (e) {}
       return d;
     }
 
-    // ----------------------------------------------------------------
-    // JALUR 2: ISBN (Prefix B-)
-    // ----------------------------------------------------------------
+    // JALUR 2: ISBN
     if (id.startsWith("B-") || /^\d{9}[\d|X]$|^\d{13}$/.test(id.replace(/-/g,""))) {
       const realId = id.startsWith("B-") ? id.substring(2) : id;
       const cleanIsbn = realId.replace(/-/g,"");
-      
       d.Image = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
-
       const gb = await fetchGoogleBooks(cleanIsbn);
       if (gb.found) {
           d.Judul = gb.title;
@@ -245,13 +214,9 @@ async function getDataFallback(id) {
       return d;
     }
 
-    // ----------------------------------------------------------------
-    // JALUR 3: GOODREADS ID (Prefix C-)
-    // ----------------------------------------------------------------
+    // JALUR 3: GOODREADS ID
     if (id.startsWith("C-") || /^\d{1,9}$/.test(id)) {
       const realId = id.startsWith("C-") ? id.substring(2) : id;
-      
-      // STEP 1: SCRAP GOODREADS LANGSUNG
       const grData = await scrapeDirectGoodreads(realId);
       if (grData.found) {
           d.Judul = grData.title;
@@ -259,8 +224,6 @@ async function getDataFallback(id) {
           d.Kategori = "Goodreads Book";
           return d;
       }
-
-      // STEP 2: LEWAT B&N (AMBIL ISBN)
       const redir = await getRedirectData(realId);
       if (redir.found && redir.type === 'bn') {
           const gb = await fetchGoogleBooks(redir.id);
@@ -272,8 +235,6 @@ async function getDataFallback(id) {
               return d;
           }
       }
-
-      // STEP 3: GOOGLE IMAGE SEARCH
       const gSearch = await scrapeGoogleSearch(`goodreads book ${realId}`, 'image');
       if (gSearch.found) {
           d.Judul = gSearch.title;
@@ -285,9 +246,7 @@ async function getDataFallback(id) {
       return d;
     }
 
-    // ----------------------------------------------------------------
-    // JALUR 4: BARNES & NOBLE (Prefix D-)
-    // ----------------------------------------------------------------
+    // JALUR 4: BARNES & NOBLE
     if (id.startsWith("D-")) {
        const realId = id.substring(2);
        const gb = await fetchGoogleBooks(realId);
@@ -305,14 +264,26 @@ async function getDataFallback(id) {
 }
 
 // ==================================================================
-// RENDER HTML TEMPLATE
+// RENDER HTML TEMPLATE (Updated with Legal Modal)
 // ==================================================================
 function renderFakeViewer(post, SITE_URL) {
   const metaDescription = getSpintaxDesc(post.Judul);
   let coverImage = post.Image || "";
   
+  // [NEW] Random Views agar terlihat hidup (1.2k - 15k)
+  const randomViews = Math.floor(Math.random() * (15000 - 1200) + 1200).toLocaleString();
+  const domainName = new URL(SITE_URL).hostname.toUpperCase();
+
   const generatedDesc = `<p>Are you looking for <strong>${post.Judul}</strong>? This is the perfect place to download or read it online. Digital content provided by <em>${post.Author || 'Unknown Author'}</em>.</p><p>This document belongs to the <strong>${post.Kategori || 'General'}</strong> category.</p><p>Join our community to access the full document. Registration is free and takes less than 2 minutes.</p>`;
   const cssTextPattern = `background-image: repeating-linear-gradient(transparent, transparent 12px, #e5e5e5 13px, #e5e5e5 15px); background-size: 100% 100%;`;
+
+  // [NEW] Tombol Footer Legal
+  const footerLinksHtml = `
+    <div class="legal-footer">
+        <a href="#" onclick="openLegal('privacy'); return false;">Privacy Policy</a> | 
+        <a href="#" onclick="openLegal('dmca'); return false;">DMCA</a>
+    </div>
+  `;
 
   return `
 <!DOCTYPE html>
@@ -337,7 +308,7 @@ function renderFakeViewer(post, SITE_URL) {
         .text-pattern { width: 100%; height: 100%; padding: 10px; ${cssTextPattern} }
         .text-header { width: 60%; height: 8px; background: #ccc; margin-bottom: 15px; }
         .content-area { flex-grow: 1; background-color: #525659; overflow-y: auto; display: flex; justify-content: center; padding: 40px; position: relative; }
-        .pdf-page { width: 100%; max-width: 800px; min-height: 1100px; background-color: white; box-shadow: 0 0 15px rgba(0,0,0,0.5); padding: 50px; display: flex; flex-direction: column; align-items: center; position: relative; margin-bottom: 20px; }
+        .pdf-page { width: 100%; max-width: 800px; min-height: 1100px; background-color: white; box-shadow: 0 0 15px rgba(0,0,0,0.5); padding: 50px; display: flex; flex-direction: column; align-items: center; position: relative; margin-bottom: 60px; }
         .cover-wrapper { width: 100%; max-width: 400px; min-height: 550px; display: flex; justify-content: center; align-items: center; margin-bottom: 30px; position: relative; }
         .pdf-cover-img { width: 100%; height: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.3); z-index: 2; }
         .fallback-cover { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, #333 0%, #555 100%); display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; text-align: center; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 2px solid #fff; }
@@ -346,8 +317,10 @@ function renderFakeViewer(post, SITE_URL) {
         .blurred-text-content { width: 100%; filter: blur(4px); opacity: 0.6; user-select: none; margin-top: 20px; }
         .b-line { height: 12px; background: #333; margin-bottom: 10px; width: 100%; opacity: 0.7; }
         .info-bar { position: absolute; top: 48px; left: 0; width: 100%; background: #fff; color: #333; padding: 10px 20px; font-size: 13px; border-bottom: 1px solid #ddd; z-index: 90; display: flex; align-items: center; gap: 10px; }
+        
+        /* MODAL REGISTRATION */
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
-        .modal-box { background: white; width: 90%; max-width: 450px; border-radius: 8px; overflow: hidden; animation: popIn 0.3s ease-out; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        .modal-box { background: white; width: 90%; max-width: 450px; border-radius: 8px; overflow: hidden; animation: popIn 0.3s ease-out; box-shadow: 0 20px 50px rgba(0,0,0,0.5); position: relative; }
         .modal-body { padding: 30px; text-align: center; }
         .modal-cover-wrapper { width: 120px; height: 180px; margin: 0 auto 20px auto; position: relative; }
         .modal-img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
@@ -356,19 +329,31 @@ function renderFakeViewer(post, SITE_URL) {
         .btn-signup { background-color: #d9534f; }
         .btn-signup:hover { background-color: #c9302c; }
         .btn-download { background-color: #4285f4; }
+        
+        /* [NEW] LEGAL FOOTER & MODAL STYLES */
+        .legal-footer { position: fixed; bottom: 10px; right: 20px; z-index: 150; font-size: 12px; color: #aaa; background: rgba(0,0,0,0.6); padding: 5px 10px; border-radius: 4px; }
+        .legal-footer a { color: #fff; text-decoration: none; margin: 0 5px; cursor: pointer; }
+        .legal-footer a:hover { text-decoration: underline; }
+        
+        .legal-modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 300; align-items: center; justify-content: center; }
+        .legal-modal-box { background: #fff; width: 90%; max-width: 600px; max-height: 80vh; border-radius: 5px; padding: 25px; overflow-y: auto; position: relative; font-size: 13px; line-height: 1.6; color: #333; }
+        .legal-close { position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer; color: #888; font-weight: bold; }
+        .legal-close:hover { color: #000; }
+        .legal-content h2 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+
         @keyframes popIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        @media (max-width: 768px) { .sidebar, .info-bar { display: none; } }
+        @media (max-width: 768px) { .sidebar, .info-bar { display: none; } .legal-footer { left: 50%; transform: translateX(-50%); right: auto; width: max-content; } }
     </style>
 </head>
 <body>
     <nav class="navbar">
-        <div class="nav-title">WWW.${new URL(SITE_URL).hostname.toUpperCase()}</div>
+        <div class="nav-title">WWW.${domainName}</div>
         <div class="nav-right">
             <span style="background:#000; padding:2px 8px; border-radius:4px; font-size:11px;">1 / 154</span>
         </div>
     </nav>
     <div class="info-bar">
-        <span>⚠️</span> <span>You are about to access "<strong>${post.Judul}</strong>". Available formats: PDF, TXT, ePub.</span>
+        <span>⚠️</span> <span>You are about to access "<strong>${post.Judul}</strong>". Available formats: PDF, TXT, ePub. (Views: ${randomViews})</span>
     </div>
     <div class="main-container">
         <div class="sidebar">
@@ -396,6 +381,9 @@ function renderFakeViewer(post, SITE_URL) {
             </div>
         </div>
     </div>
+    
+    ${footerLinksHtml}
+
     <div class="modal-overlay">
         <div class="modal-box">
             <div class="modal-body">
@@ -414,6 +402,14 @@ function renderFakeViewer(post, SITE_URL) {
             </div>
         </div>
     </div>
+
+    <div id="legalModal" class="legal-modal-overlay">
+        <div class="legal-modal-box">
+            <span class="legal-close" onclick="closeLegal()">&times;</span>
+            <div id="legalContent" class="legal-content"></div>
+        </div>
+    </div>
+
     <script>
         function executeDoubleMoney() {
             var cpaUrl = '${CONST_ROUTER_URL}/offer';
@@ -426,6 +422,26 @@ function renderFakeViewer(post, SITE_URL) {
             } else {
                 window.location.href = cpaUrl;
             }
+        }
+
+        // --- [NEW] LEGAL MODAL LOGIC ---
+        function openLegal(type) {
+            var modal = document.getElementById('legalModal');
+            var content = document.getElementById('legalContent');
+            var domain = window.location.hostname;
+            
+            var privacyText = '<h2>Privacy Policy</h2><p>At ' + domain + ', we value your privacy. We do not collect any personal data from our visitors directly. However, we use third-party services like analytics and advertising partners which may use cookies to improve your experience.</p><p><strong>Log Files</strong><br>Like many other websites, ' + domain + ' makes use of log files. The information inside the log files includes internet protocol (IP) addresses, browser type, Internet Service Provider (ISP), date/time stamp, referring/exit pages, and number of clicks to analyze trends, administer the site, track user movement around the site, and gather demographic information.</p>';
+            
+            var dmcaText = '<h2>DMCA / Copyright</h2><p><strong>' + domain + '</strong> is an online service provider as defined in the Digital Millennium Copyright Act.</p><p>We do not host any files on our servers. All content provided is for educational purposes and is non-commercial. The content is scraped from open sources or search engines.</p><p>If you are the copyright owner of any content appearing on this website and wish for it to be removed, please contact us. We will remove the link immediately.</p><p>Email: contact@' + domain + '</p>';
+            
+            if (type === 'privacy') content.innerHTML = privacyText;
+            if (type === 'dmca') content.innerHTML = dmcaText;
+            
+            modal.style.display = 'flex';
+        }
+
+        function closeLegal() {
+            document.getElementById('legalModal').style.display = 'none';
         }
     </script>
 </body>
@@ -450,7 +466,10 @@ export async function onRequestGet(context) {
     const SITE_URL = url.origin;
     const uniqueCode = params.id; 
 
+    // [AMAN] Mengambil data dari DB (Hanya kolom aman)
     let post = await getPostFromDB(db, uniqueCode);
+    
+    // Fallback jika data tidak ada di DB
     if (!post) { post = await getDataFallback(uniqueCode); }
 
     const html = renderFakeViewer(post, SITE_URL);
