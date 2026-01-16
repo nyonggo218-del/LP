@@ -1,30 +1,27 @@
 // Hardcode: /functions/api/buku.js
 // Handles requests to /api/buku
-// [MODIFIED] Added full pagination logic
-// [FIXED] Replaced ID with KodeUnik and rowid for sorting
-// [UPDATED] Made Description optional for D1 space saving
+// [MODIFIED] Removed Deskripsi & Views columns logic + Security Patch
 
-const POSTS_PER_PAGE = 20; // Limit 20
+const POSTS_PER_PAGE = 20; 
 
 /**
  * Handles GET requests to fetch paginated books (posts)
  */
 async function handleGetAll(db, page) {
   const limit = POSTS_PER_PAGE;
-  const offset = (page - 1) * limit;
+  // Pastikan page minimal 1 agar tidak error offset
+  const safePage = Math.max(1, page); 
+  const offset = (safePage - 1) * limit;
 
-  // Query 1: Get total count
-  // Menggunakan KodeUnik karena kolom ID tidak ada
-  const countStmt = db.prepare("SELECT COUNT(KodeUnik) as total FROM Buku");
+  // Query 1: Hitung total data
+  const countStmt = db.prepare("SELECT COUNT(ID) as total FROM Buku");
   const { total } = await countStmt.first();
   const totalPages = Math.ceil(total / limit);
 
-  // Query 2: Get the posts for the current page
-  // Hapus 'ID' dari SELECT
-  // Ganti ORDER BY ID -> ORDER BY rowid (untuk urutan 'terbaru' berdasarkan waktu insert)
+  // Query 2: Ambil data (Tanpa Deskripsi, Tanpa Views, Tanpa TanggalPost)
   const postsStmt = db
     .prepare(
-      "SELECT Judul, Author, Image, Kategori, KodeUnik FROM Buku ORDER BY rowid DESC LIMIT ? OFFSET ?"
+      "SELECT ID, Judul, Author, Image, Kategori, KodeUnik FROM Buku ORDER BY ID DESC LIMIT ? OFFSET ?"
     )
     .bind(limit, offset);
 
@@ -33,7 +30,7 @@ async function handleGetAll(db, page) {
   return {
     posts: results,
     totalPages: totalPages,
-    currentPage: page,
+    currentPage: safePage,
   };
 }
 
@@ -43,10 +40,9 @@ async function handleGetAll(db, page) {
 export async function onRequestGet(context) {
   const { env, request } = context;
   const db = env.DB;
-  const cacheSeconds = 300; // 5 minutes
+  const cacheSeconds = 300; // Cache 5 menit
 
   try {
-    // Get page number from query, default to 1
     const url = new URL(request.url);
     const page = parseInt(url.searchParams.get("page") || "1");
 
@@ -70,44 +66,56 @@ export async function onRequestGet(context) {
  * Main handler for POST requests (create)
  */
 export async function onRequestPost(context) {
-  // WARNING: This endpoint is open to the public. Secure it!
   const { env, request } = context;
   const db = env.DB;
+
+  // [SECURITY] Cek API Key
+  const API_KEY = env.API_KEY || "RAHASIA"; 
+  const authHeader = request.headers.get("x-api-key");
+
+  if (authHeader !== API_KEY) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   try {
     const postData = await request.json();
     
-    // [UPDATED] Deskripsi dihapus dari validasi wajib
+    // [MODIFIED] Validasi dikurangi (Hapus cek Deskripsi)
     if (
       !postData.Judul ||
       !postData.Author ||
       !postData.KodeUnik
     ) {
-      return new Response(JSON.stringify({ error: "Missing required fields (Judul, Author, KodeUnik)" }), {
+      return new Response(JSON.stringify({ error: "Missing required fields" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
+    // [MODIFIED] Query INSERT disederhanakan
+    // Menghapus kolom Deskripsi dari perintah SQL
     const stmt = db
       .prepare(
-        "INSERT INTO Buku (Judul, Deskripsi, Author, Image, Kategori, KodeUnik) VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO Buku (Judul, Author, Image, Kategori, KodeUnik) VALUES (?, ?, ?, ?, ?)"
       )
       .bind(
         postData.Judul,
-        postData.Deskripsi || "", // [UPDATED] Default ke string kosong jika null
         postData.Author,
         postData.Image || null,
         postData.Kategori || null,
         postData.KodeUnik
       );
+      
     await stmt.run();
+    
     return new Response(
       JSON.stringify({ success: true, message: "Post created" }),
       { status: 201, headers: { "Content-Type": "application/json" } }
     );
   } catch (e) {
-    // Send back a JSON error
     return new Response(JSON.stringify({ error: e.message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
