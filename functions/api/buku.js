@@ -1,6 +1,6 @@
 // Hardcode: /functions/api/buku.js
 // Handles requests to /api/buku
-// [MODIFIED] Removed Deskripsi & Views columns logic + Security Patch
+// [MODIFIED] Consistent with RSS/Podcast logic (rowid sort)
 
 const POSTS_PER_PAGE = 20; 
 
@@ -9,19 +9,22 @@ const POSTS_PER_PAGE = 20;
  */
 async function handleGetAll(db, page) {
   const limit = POSTS_PER_PAGE;
-  // Pastikan page minimal 1 agar tidak error offset
+  // Pastikan page minimal 1
   const safePage = Math.max(1, page); 
   const offset = (safePage - 1) * limit;
 
   // Query 1: Hitung total data
-  const countStmt = db.prepare("SELECT COUNT(ID) as total FROM Buku");
+  // Kita hitung berdasarkan rowid atau KodeUnik (PK) sama saja
+  const countStmt = db.prepare("SELECT COUNT(KodeUnik) as total FROM Buku");
   const { total } = await countStmt.first();
   const totalPages = Math.ceil(total / limit);
 
-  // Query 2: Ambil data (Tanpa Deskripsi, Tanpa Views, Tanpa TanggalPost)
+  // Query 2: Ambil data
+  // [UPDATE] Menggunakan 'ORDER BY rowid DESC' agar konsisten dengan RSS
+  // Data terbaru (yang baru diinsert) akan muncul paling atas
   const postsStmt = db
     .prepare(
-      "SELECT ID, Judul, Author, Image, Kategori, KodeUnik FROM Buku ORDER BY ID DESC LIMIT ? OFFSET ?"
+      "SELECT KodeUnik, Judul, Author, Image, Kategori FROM Buku ORDER BY rowid DESC LIMIT ? OFFSET ?"
     )
     .bind(limit, offset);
 
@@ -40,7 +43,7 @@ async function handleGetAll(db, page) {
 export async function onRequestGet(context) {
   const { env, request } = context;
   const db = env.DB;
-  const cacheSeconds = 300; // Cache 5 menit
+  const cacheSeconds = 300; // Cache 5 Menit
 
   try {
     const url = new URL(request.url);
@@ -83,7 +86,7 @@ export async function onRequestPost(context) {
   try {
     const postData = await request.json();
     
-    // [MODIFIED] Validasi dikurangi (Hapus cek Deskripsi)
+    // Validasi Input (Hanya kolom wajib)
     if (
       !postData.Judul ||
       !postData.Author ||
@@ -95,8 +98,7 @@ export async function onRequestPost(context) {
       });
     }
 
-    // [MODIFIED] Query INSERT disederhanakan
-    // Menghapus kolom Deskripsi dari perintah SQL
+    // Insert Data (Tanpa TanggalPost, Deskripsi, Views)
     const stmt = db
       .prepare(
         "INSERT INTO Buku (Judul, Author, Image, Kategori, KodeUnik) VALUES (?, ?, ?, ?, ?)"
