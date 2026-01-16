@@ -70,51 +70,44 @@ export async function onRequestGet(context) {
       ? `${url.protocol}//${forwardedHost}` 
       : url.origin;
 
-    // --- LOGIKA URL & TANGGAL ---
-    // Struktur: /kategori/hari/bulan/tahun/rss.xml
-    // Contoh: /ebook1/16/01/2025/rss.xml
-    
+    // --- PARSING URL ---
+    // Struktur: /Kategori/Tanggal/Bulan/Tahun/rss.xml
     const pathSegments = params.path || [];
     const kategori = pathSegments[0] || null;
     
-    // Ambil parameter tanggal dari URL jika ada
+    // Ambil parameter tanggal manual dari URL
     const pDay = pathSegments[1];
     const pMonth = pathSegments[2];
     const pYear = pathSegments[3];
 
-    // Tentukan "Base Time" (Waktu Mulai Post)
-    // Jam/Menit/Detik diambil dari waktu Generate (Sekarang)
+    // Tentukan "Base Time" (Waktu Awal Postingan Teratas)
     let baseDate = new Date(); 
 
-    // Jika URL mengandung tanggal lengkap, timpa Tanggal/Bulan/Tahun-nya
+    // Jika URL mengandung tanggal lengkap, kita set waktu mundur ke tanggal itu
     if (pDay && pMonth && pYear) {
-        // Hati-hati: Bulan di JS mulai dari 0 (Januari = 0)
         baseDate.setDate(parseInt(pDay));
         baseDate.setMonth(parseInt(pMonth) - 1); 
         baseDate.setFullYear(parseInt(pYear));
-        // Jam, Menit, Detik tetap mengikuti waktu 'now' (Generate time)
     }
 
     const BASE_TIME_MS = baseDate.getTime();
-    
-    // [MODIFIED] Rentang waktu diubah menjadi 6 Jam (dalam milidetik)
-    // 6 jam * 60 menit * 60 detik * 1000 ms
-    const WINDOW_MS = 6 * 60 * 60 * 1000; 
+    const WINDOW_MS = 6 * 60 * 60 * 1000; // Rentang 6 Jam
 
     const queryParams = [];
     
-    // QUERY DATABASE
-    // Menggunakan ORDER BY ID DESC sebagai indikator buku terbaru
-    // LIMIT diset 180
+    // --- QUERY DATABASE ---
+    // 1. SELECT: Hanya ambil kolom yg kita butuhkan (Tanpa TanggalPost/Views)
+    // 2. ORDER BY: Gunakan 'rowid' karena KodeUnik itu TEXT (bukan angka urut)
     let query =
-      "SELECT Judul, Author, Kategori, Image, KodeUnik, Views FROM Buku WHERE 1=1";
+      "SELECT Judul, Author, Kategori, Image, KodeUnik FROM Buku WHERE 1=1";
 
     if (kategori) {
       query += " AND UPPER(Kategori) = UPPER(?)";
       queryParams.push(kategori);
     }
     
-    query += " ORDER BY ID DESC LIMIT 180"; 
+    // PENTING: Gunakan 'rowid' agar data yang terbaru di-insert muncul paling atas
+    query += " ORDER BY rowid DESC LIMIT 180"; 
     
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
@@ -125,8 +118,6 @@ export async function onRequestGet(context) {
       
     const selfPath = url.pathname; 
     const selfLink = `${SITE_URL}${selfPath}`;
-
-    // Last Build Date = Waktu Generator saat ini (Base Date)
     const buildDateStr = baseDate.toUTCString();
 
     let xml = `<?xml version="1.0" encoding="UTF-8" ?>
@@ -140,21 +131,20 @@ export async function onRequestGet(context) {
   <atom:link href="${selfLink}" rel="self" type="application/rss+xml" />
 `;
 
-    // Loop data untuk generate item
     for (let i = 0; i < results.length; i++) {
       const post = results[i];
       
-      // --- LOGIKA DISTRIBUSI WAKTU ---
-      // Post ke-0 (Teratas) = Waktu Generate (Base Time)
-      // Post ke-179 (Terbawah) = Waktu Generate - 6 Jam
-      const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
-      const postTime = new Date(BASE_TIME_MS - timeOffset);
-      const pubDate = postTime.toUTCString();
-      // -------------------------------
-
       const postUrl = `${SITE_URL}/post/${post.KodeUnik}`;
       const judulAsli = escapeXML(post.Judul);
       const seed = post.KodeUnik || post.Judul; 
+
+      // --- LOGIKA WAKTU MATEMATIS ---
+      // Post i=0 (Teratas/Terbaru) = Waktu Base
+      // Post i=179 (Terbawah) = Waktu Base - 6 Jam
+      const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
+      const postTime = new Date(BASE_TIME_MS - timeOffset);
+      const pubDate = postTime.toUTCString();
+      // -----------------------------
 
       const isMultiLang = (stringToHash(seed + "langType") % 100) < 50; 
       let awalan = "";
@@ -221,4 +211,3 @@ export async function onRequestGet(context) {
     });
   }
 }
-
