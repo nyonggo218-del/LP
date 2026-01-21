@@ -4,6 +4,7 @@
 // KONFIGURASI UTAMA
 // ==================================================================
 const POSTS_PER_PAGE = 1000; 
+const CACHE_TTL = 21600;     // Cache 6 Jam
 const DEFAULT_EMAIL_USER = "contact"; 
 
 // 📢 METADATA MASTER FILE
@@ -12,7 +13,6 @@ const MASTER_DURATION = 12;
 
 // --- SPINTAX CONFIG ---
 const FEED_TITLE_SPIN = `{Audiobook Collection|Best Audio Library|Daily Listen|Podcast Books|Story Time|Audio Archive|The Reader's Hub|Digital Book Shelf}`;
-// Deskripsi panjang (>50 chars) untuk validasi Apple
 const FEED_DESC_SPIN = `{Welcome to our extensive Audiobook Collection where you can listen to the best stories completely free of charge. We provide a wide range of genres including fiction, non-fiction, and educational materials for your daily listening pleasure.|Your daily dose of stories starts here. Enjoy high-quality audiobooks ranging from mystery to romance, available for instant streaming and download without any registration required.|This is the complete collection of audiobooks for free. We feature unabridged versions, detailed reviews, author biographies, and immersive storytelling sessions for book lovers everywhere.|Discover our archive of classic and modern literature. Whether you are looking for self-improvement books or thrilling novels, our library has something special for every listener.}`;
 const FEED_AUTHOR_SPIN = `{Ebook Library|Audio Team|Story Teller|Book Lover|Digital Archive|Net Reader|The Librarian|Audio Admin}`;
 
@@ -71,42 +71,58 @@ function getRootDomain(hostname) {
 export async function onRequest(context) {
   const { env, request, params } = context;
   const db = env.DB;
+  const url = new URL(request.url);
+
+  // 1. CACHE STRATEGY (Hemat D1)
+  const cacheKey = new Request(url.toString(), request);
+  const cache = caches.default;
+  let response = await cache.match(cacheKey);
+  if (response) {
+    const newRes = new Response(response.body, response);
+    newRes.headers.set("X-Cache-Status", "HIT");
+    return newRes;
+  }
 
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: { "Access-Control-Allow-Origin": "*" } });
   }
 
   try {
-    const url = new URL(request.url);
     const forwardedHost = request.headers.get("X-Forwarded-Host");
     const CURRENT_HOST = forwardedHost || url.host;
     const SITE_URL = `${url.protocol}//${CURRENT_HOST}`;
     const selfLink = `${SITE_URL}${url.pathname}`;
 
-    // Parsing URL
+    // =========================================================
+    // 🚀 NEW PARSING LOGIC (SUPER RAMPING)
+    // Format: /Category/User/PintUser/PintBoard/Tier2...
+    // =========================================================
     const pathSegments = params.path || [];
+    
+    // Index 0: Kategori
     const categoryParam = pathSegments[0]; 
-    let volParam = 1;
-    let dateStartIndex = 1;
-    if (pathSegments[1] && !isNaN(pathSegments[1])) {
-        volParam = parseInt(pathSegments[1]);
-        if (volParam < 1) volParam = 1;
-        dateStartIndex = 2; 
-    }
-    const usernameParam = pathSegments[dateStartIndex + 3]; 
-    const pintUserParam = pathSegments[dateStartIndex + 4];
-    const pintBoardParam = pathSegments[dateStartIndex + 5];
-    const extraBacklinkSegments = pathSegments.slice(dateStartIndex + 6);
+    
+    // Index 1: Username (Untuk Email)
+    const usernameParam = pathSegments[1]; 
+
+    // Index 2 & 3: Pinterest (Backlink Tier 1)
+    const pintUserParam = pathSegments[2];
+    const pintBoardParam = pathSegments[3];
+    
+    // Index 4+: Tier 2 Link (Backlink Tier 2)
+    const extraBacklinkSegments = pathSegments.slice(4);
+
+    // Hardcode Volume ke 1 (Karena kamu sudah pecah kategori jadi max 1000)
+    const volParam = 1;
 
     const emailUser = usernameParam || DEFAULT_EMAIL_USER; 
     const emailDomain = getRootDomain(CURRENT_HOST);
     const DYNAMIC_EMAIL = `${emailUser}@${emailDomain}`; 
-    const identitySeed = (categoryParam || "") + (usernameParam || "") + "v" + volParam;
+    const identitySeed = (categoryParam || "") + (usernameParam || "");
     const channelUUID = generateUUID(identitySeed);
 
     // Metadata
-    let dynamicFeedTitle = spinTextStable(FEED_TITLE_SPIN, identitySeed + "title");
-    dynamicFeedTitle += ` - Vol. ${volParam}`;
+    const dynamicFeedTitle = spinTextStable(FEED_TITLE_SPIN, identitySeed + "title");
     const dynamicFeedDesc = spinTextStable(FEED_DESC_SPIN, identitySeed + "desc");
     const dynamicFeedAuthor = spinTextStable(FEED_AUTHOR_SPIN, identitySeed + "auth");
 
@@ -121,15 +137,19 @@ export async function onRequest(context) {
         if (!rawTier2Url.startsWith("http")) rawTier2Url = "https://" + rawTier2Url;
     }
 
-    // DB Query
+    // 2. QUERY DATABASE (Optimized: No Offset Logic needed practically)
     const limit = POSTS_PER_PAGE; 
-    const offset = (volParam - 1) * limit; 
+    const offset = 0; // Selalu 0 karena Vol selalu 1
+
     const queryParams = [];
     let query = "SELECT Judul, Author, Kategori, Image, KodeUnik FROM Buku WHERE 1=1";
+    
     if (categoryParam) {
-      query += " AND UPPER(Kategori) = UPPER(?)";
+      // Query tanpa UPPER untuk performa index
+      query += " AND Kategori = ?"; 
       queryParams.push(categoryParam);
     }
+    
     query += ` ORDER BY rowid DESC LIMIT ? OFFSET ?`;
     queryParams.push(limit);
     queryParams.push(offset);
@@ -137,16 +157,16 @@ export async function onRequest(context) {
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
 
+    // Time Logic (Current Time)
     const baseDate = new Date();
     const BASE_TIME_MS = baseDate.getTime();
     const WINDOW_MS = 12 * 60 * 60 * 1000; 
     const lastBuildDate = baseDate.toUTCString();
     
     const picsumSeed = identitySeed || "default";
-    // Gunakan &amp; agar XML Valid
     const channelCoverUrl = `${SITE_URL}/image-proxy?url=${encodeURIComponent(`https://picsum.photos/seed/${picsumSeed}/1400/1400`)}&amp;ext=.jpg`;
 
-    // XML GENERATION
+    // XML HEADER
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" 
     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" 
@@ -197,7 +217,7 @@ export async function onRequest(context) {
 
         const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
         const postTime = new Date(BASE_TIME_MS - timeOffset);
-        postTime.setDate(postTime.getDate() - (volParam - 1));
+        // Tanggal mundur dinamis dari waktu sekarang
         const pubDate = postTime.toUTCString();
 
         const isMultiLang = (stringToHash(seed + "langType") % 100) < 50; 
@@ -205,10 +225,10 @@ export async function onRequest(context) {
         let akhiran = isMultiLang ? spinTextStable("{2025|2026|Full}", seed + "suffix") : spinTextStable(SPINTAX_SUFFIX, seed + "suffix");
         const finalTitle = `${awalan} ${judulAsli} ${akhiran}`;
         
+        // Backlink Tier 1 & 2 Logic
         let pinterestPart = "";
         let tier2Part = "";
         const luckFactor = stringToHash(seed + "backlinkLuck") % 100;
-        
         if (luckFactor < 70) {
             if (rawPinterestUrl) {
                 pinterestPart = `<p>📌 ${spinTextStable(PINTEREST_INTRO, seed + "pintro")}: <a href="${rawPinterestUrl}">${spinTextStable(PINTEREST_ANCHOR, seed + "panchor")}</a></p>`;
@@ -223,13 +243,10 @@ export async function onRequest(context) {
         const descTags = spinTextStable(DESC_TAGS, seed + "descTags");
         const authorSafe = post.Author || "Unknown Author";
         const rawDescText = `${descStart} ${judulAsli} by ${authorSafe} ${descEnd}. Tags: ${descTags}`;
-        
         const ctaPrefix = spinTextStable("{DOWNLOAD|GET BOOK|READ NOW|ACCESS FILE}", seed + "cta");
         const liveLinkText = `📥 ${ctaPrefix}: ${judulAsli}`;
 
-        // 🔥 FIX LINK HIDUP IHEART:
-        // Gunakan struktur HTML yang sama untuk SEMUA field deskripsi.
-        // Link dibungkus <strong> dan <a> agar di-recognize sebagai "Penting" oleh parser.
+        // HTML Content dengan Link Hidup
         const htmlContent = `
           <p>${rawDescText}</p>
           <hr/>
@@ -237,7 +254,7 @@ export async function onRequest(context) {
           ${pinterestPart}
           ${tier2Part}
         `;
-
+        
         let episodeImage = channelCoverUrl; 
         if (post.Image) {
           episodeImage = `${SITE_URL}/image-proxy?url=${encodeURIComponent(post.Image)}&amp;ext=.jpg`;
@@ -265,15 +282,20 @@ export async function onRequest(context) {
     const encoder = new TextEncoder();
     const data = encoder.encode(finalString);
     
-    return new Response(data, {
+    response = new Response(data, {
       status: 200,
       headers: {
         "Content-Type": "application/rss+xml; charset=utf-8",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": `public, max-age=3600, s-maxage=${CACHE_TTL}`,
         "Content-Length": data.byteLength.toString(),
-        "Access-Control-Allow-Origin": "*" 
+        "Access-Control-Allow-Origin": "*",
+        "X-Cache-Status": "MISS" 
       },
     });
+
+    context.waitUntil(cache.put(cacheKey, response.clone()));
+
+    return response;
 
   } catch (e) {
     return new Response(`Error: ${e.message}`, { status: 500 });
