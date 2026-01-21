@@ -68,12 +68,18 @@ function getRootDomain(hostname) {
   return hostname;
 }
 
+// Helper Baru: Merapikan Username (yunus -> Yunus)
+function toTitleCase(str) {
+  if (!str) return "";
+  return str.replace(/[^a-zA-Z0-9 ]/g, " ").toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ').trim();
+}
+
 export async function onRequest(context) {
   const { env, request, params } = context;
   const db = env.DB;
   const url = new URL(request.url);
 
-  // 1. CACHE STRATEGY (Hemat D1)
+  // 1. CACHE STRATEGY
   const cacheKey = new Request(url.toString(), request);
   const cache = caches.default;
   let response = await cache.match(cacheKey);
@@ -93,27 +99,15 @@ export async function onRequest(context) {
     const SITE_URL = `${url.protocol}//${CURRENT_HOST}`;
     const selfLink = `${SITE_URL}${url.pathname}`;
 
-    // =========================================================
-    // 🚀 NEW PARSING LOGIC (SUPER RAMPING)
-    // Format: /Category/User/PintUser/PintBoard/Tier2...
-    // =========================================================
+    // PARSING URL
     const pathSegments = params.path || [];
-    
-    // Index 0: Kategori
     const categoryParam = pathSegments[0]; 
-    
-    // Index 1: Username (Untuk Email)
     const usernameParam = pathSegments[1]; 
-
-    // Index 2 & 3: Pinterest (Backlink Tier 1)
     const pintUserParam = pathSegments[2];
     const pintBoardParam = pathSegments[3];
-    
-    // Index 4+: Tier 2 Link (Backlink Tier 2)
     const extraBacklinkSegments = pathSegments.slice(4);
 
-    // Hardcode Volume ke 1 (Karena kamu sudah pecah kategori jadi max 1000)
-    const volParam = 1;
+    const volParam = 1; // Selalu 1
 
     const emailUser = usernameParam || DEFAULT_EMAIL_USER; 
     const emailDomain = getRootDomain(CURRENT_HOST);
@@ -121,8 +115,19 @@ export async function onRequest(context) {
     const identitySeed = (categoryParam || "") + (usernameParam || "");
     const channelUUID = generateUUID(identitySeed);
 
-    // Metadata
-    const dynamicFeedTitle = spinTextStable(FEED_TITLE_SPIN, identitySeed + "title");
+    // ========================================================
+    // 🔥 LOGIKA JUDUL BARU (USERNAME + SPINTAX)
+    // ========================================================
+    const baseTitle = spinTextStable(FEED_TITLE_SPIN, identitySeed + "title");
+    let dynamicFeedTitle = baseTitle;
+
+    // Jika username bukan default "contact", tempel di depan judul
+    if (emailUser && emailUser !== DEFAULT_EMAIL_USER) {
+        const cleanName = toTitleCase(emailUser);
+        dynamicFeedTitle = `${cleanName} ${baseTitle}`; // Contoh: "Yunus Daily Listen"
+    }
+    
+    // Deskripsi & Author tetap sama
     const dynamicFeedDesc = spinTextStable(FEED_DESC_SPIN, identitySeed + "desc");
     const dynamicFeedAuthor = spinTextStable(FEED_AUTHOR_SPIN, identitySeed + "auth");
 
@@ -137,15 +142,13 @@ export async function onRequest(context) {
         if (!rawTier2Url.startsWith("http")) rawTier2Url = "https://" + rawTier2Url;
     }
 
-    // 2. QUERY DATABASE (Optimized: No Offset Logic needed practically)
+    // 2. QUERY DATABASE
     const limit = POSTS_PER_PAGE; 
-    const offset = 0; // Selalu 0 karena Vol selalu 1
-
+    const offset = 0; 
     const queryParams = [];
     let query = "SELECT Judul, Author, Kategori, Image, KodeUnik FROM Buku WHERE 1=1";
     
     if (categoryParam) {
-      // Query tanpa UPPER untuk performa index
       query += " AND Kategori = ?"; 
       queryParams.push(categoryParam);
     }
@@ -157,7 +160,7 @@ export async function onRequest(context) {
     const stmt = db.prepare(query).bind(...queryParams);
     const { results } = await stmt.all();
 
-    // Time Logic (Current Time)
+    // Time Logic
     const baseDate = new Date();
     const BASE_TIME_MS = baseDate.getTime();
     const WINDOW_MS = 12 * 60 * 60 * 1000; 
@@ -166,7 +169,7 @@ export async function onRequest(context) {
     const picsumSeed = identitySeed || "default";
     const channelCoverUrl = `${SITE_URL}/image-proxy?url=${encodeURIComponent(`https://picsum.photos/seed/${picsumSeed}/1400/1400`)}&amp;ext=.jpg`;
 
-    // XML HEADER
+    // XML GENERATION
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" 
     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" 
@@ -217,7 +220,6 @@ export async function onRequest(context) {
 
         const timeOffset = Math.floor((i / results.length) * WINDOW_MS);
         const postTime = new Date(BASE_TIME_MS - timeOffset);
-        // Tanggal mundur dinamis dari waktu sekarang
         const pubDate = postTime.toUTCString();
 
         const isMultiLang = (stringToHash(seed + "langType") % 100) < 50; 
@@ -225,7 +227,7 @@ export async function onRequest(context) {
         let akhiran = isMultiLang ? spinTextStable("{2025|2026|Full}", seed + "suffix") : spinTextStable(SPINTAX_SUFFIX, seed + "suffix");
         const finalTitle = `${awalan} ${judulAsli} ${akhiran}`;
         
-        // Backlink Tier 1 & 2 Logic
+        // Backlink Logic
         let pinterestPart = "";
         let tier2Part = "";
         const luckFactor = stringToHash(seed + "backlinkLuck") % 100;
@@ -246,7 +248,7 @@ export async function onRequest(context) {
         const ctaPrefix = spinTextStable("{DOWNLOAD|GET BOOK|READ NOW|ACCESS FILE}", seed + "cta");
         const liveLinkText = `📥 ${ctaPrefix}: ${judulAsli}`;
 
-        // HTML Content dengan Link Hidup
+        // HTML Content
         const htmlContent = `
           <p>${rawDescText}</p>
           <hr/>
