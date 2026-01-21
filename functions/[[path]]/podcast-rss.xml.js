@@ -3,7 +3,7 @@
 // ==================================================================
 // KONFIGURASI UTAMA
 // ==================================================================
-const POSTS_PER_PAGE = 200; 
+const POSTS_PER_PAGE = 1000; 
 const DEFAULT_EMAIL_USER = "contact"; 
 
 // 📢 METADATA MASTER FILE
